@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<!--
+Copyright (c) 2025 jjpjiangjianping@qq.com
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+-->
+<html>
+<head>
+    <title>Excel 查看器</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        .container {
+            max-width: 100%;
+            margin: 10px auto;
+            padding: 5px;
+        }
+
+        #tableContainer {
+            height: 80vh;
+            overflow: auto;
+        }
+
+        #excelTable {
+            font-size: 16px;
+            border-collapse: collapse;
+        }
+
+        #excelTable th, #excelTable td {
+            padding: 12px;
+            min-width: 120px;
+            border: 1px solid #ddd;
+            background: white;
+        }
+
+        .freeze-col {
+            position: sticky;
+            left: 0;
+            z-index: 2;
+            box-shadow: 2px 0 5px rgba(0,0,0,0.1);
+        }
+
+        .freeze-row {
+            position: sticky;
+            top: 0;
+            z-index: 3;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+
+        .controls {
+            margin-bottom: 10px;
+            gap: 8px;
+            display: flex;
+            flex-wrap: wrap;
+        }
+
+        .pagination, .loader {
+            text-align: center;
+            margin-top: 10px;
+        }
+        
+        .hidden {
+            display: none;
+        }
+
+        button.active {
+            background: #007bff;
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="controls">
+            <input type="file" id="excelFile" accept=".xlsx, .xls" style="flex:1">
+            <div style="display:flex; gap:5px">
+                <button id="freezeColBtn" onclick="toggleFreeze('col')">冻结首列</button>
+                <button id="freezeRowBtn" onclick="toggleFreeze('row')">冻结首行</button>
+                <input type="number" id="rowsPerPage" value="100" min="1" style="width: 80px;">
+                <label>行/页</label>
+            </div>
+            <div style="display:flex; flex:2; gap:5px">
+                <input type="text" id="filterInput" placeholder="搜索..." style="flex:1">
+                <select id="sortOrder">
+                    <option value="asc">↑</option>
+                    <option value="desc">↓</option>
+                </select>
+            </div>
+        </div>
+
+        <div id="tableContainer">
+            <table id="excelTable"></table>
+        </div>
+        <div class="pagination">
+            <button id="prevPage" onclick="changePage(-1)">上一页</button>
+            <span id="pageInfo">第 1 页 / 共 1 页</span>
+            <button id="nextPage" onclick="changePage(1)">下一页</button>
+        </div>
+        <div class="loader hidden" id="loader">加载中...</div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script>
+        let currentData = [];
+        let filteredData = [];
+        let currentPage = 1;
+        let totalPages = 1;
+        let freezeCol = false;
+        let freezeRow = false;
+
+        document.getElementById('excelFile').addEventListener('change', handleFile);
+        document.getElementById('filterInput').addEventListener('input', filterTable);
+        document.getElementById('sortOrder').addEventListener('change', changeSortOrder);
+        document.getElementById('rowsPerPage').addEventListener('change', () => {
+            currentPage = 1;
+            updatePagination();
+        });
+
+        function handleFile(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            showLoader(true);
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const data = new Uint8Array(e.target.result);
+                    const workbook = XLSX.read(data, {type: 'array'});
+                    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+                    currentData = XLSX.utils.sheet_to_json(sheet, {header: 1});
+                    
+                    if (currentData.length < 2) {
+                        alert('Excel 文件为空或格式不正确');
+                        return;
+                    }
+                    
+                    filteredData = [currentData[0], ...currentData.slice(1)];
+                    updatePagination();
+                    renderTable();
+                } catch (error) {
+                    alert('无法读取文件，请检查文件格式');
+                    console.error(error);
+                } finally {
+                    showLoader(false);
+                }
+            };
+            reader.readAsArrayBuffer(file);
+        }
+
+        function renderTable() {
+            const table = document.getElementById('excelTable');
+            table.innerHTML = '';
+
+            // 渲染表头
+            const thead = table.createTHead();
+            const headerRow = thead.insertRow();
+            currentData[0].forEach((cell, index) => {
+                const th = document.createElement('th');
+                th.textContent = cell;
+                th.onclick = () => sortColumn(index);
+                if (freezeRow) th.classList.add('freeze-row');
+                if (freezeCol && index === 0) th.classList.add('freeze-col');
+                headerRow.appendChild(th);
+            });
+
+            // 渲染表格内容
+            const tbody = table.createTBody();
+            const start = (currentPage - 1) * rowsPerPage();
+            const end = start + rowsPerPage();
+            
+            filteredData.slice(1).slice(start, end).forEach(row => {
+                const tr = tbody.insertRow();
+                row.forEach((cell, index) => {
+                    const td = tr.insertCell();
+                    if (typeof cell === 'number' && indexIncludesDate(index)) {
+                        cell = XLSX.SSF.format("yyyy-mm-dd", cell);
+                    }
+                    td.textContent = cell || '';
+                    if (freezeCol && index === 0) td.classList.add('freeze-col');
+                });
+            });
+
+            // 更新按钮状态
+            document.getElementById('freezeColBtn').classList.toggle('active', freezeCol);
+            document.getElementById('freezeRowBtn').classList.toggle('active', freezeRow);
+        }
+
+        function indexIncludesDate(index) {
+            return [5, 6, 14].includes(index);
+        }
+
+        function toggleFreeze(type) {
+            if (type === 'col') freezeCol = !freezeCol;
+            if (type === 'row') freezeRow = !freezeRow;
+            renderTable();
+        }
+
+        function sortColumn(colIndex) {
+            const order = document.getElementById('sortOrder').value;
+            const dataRows = filteredData.slice(1);
+            
+            dataRows.sort((a, b) => {
+                const valA = a[colIndex] ?? '';
+                const valB = b[colIndex] ?? '';
+                return typeof valA === 'number' 
+                    ? valA - valB 
+                    : String(valA).localeCompare(String(valB));
+            });
+
+            if (order === 'desc') dataRows.reverse();
+            
+            filteredData = [filteredData[0], ...dataRows];
+            currentPage = 1;
+            updatePagination();
+        }
+
+        function filterTable() {
+            const query = document.getElementById("filterInput").value.toLowerCase();
+            const header = currentData[0];
+            const dataRows = currentData.slice(1);
+            
+            const filteredRows = dataRows.filter(row => 
+                row.some(cell => {
+                    const cellText = String(cell ?? '').toLowerCase();
+                    return cellText.includes(query);
+                })
+            );
+            
+            filteredData = [header, ...filteredRows];
+            currentPage = 1;
+            updatePagination();
+        }
+
+        function updatePagination() {
+            totalPages = Math.max(1, Math.ceil((filteredData.length - 1) / rowsPerPage()));
+            currentPage = Math.max(1, Math.min(totalPages, currentPage));
+            document.getElementById('pageInfo').textContent = `第 ${currentPage} 页 / 共 ${totalPages} 页`;
+            renderTable();
+        }
+
+        function rowsPerPage() {
+            return parseInt(document.getElementById('rowsPerPage').value) || 1;
+        }
+
+        function changePage(delta) {
+            currentPage = Math.max(1, Math.min(totalPages, currentPage + delta));
+            updatePagination();
+        }
+
+        function changeSortOrder() {
+            currentPage = 1;
+            updatePagination();
+        }
+
+        function showLoader(visible) {
+            document.getElementById("loader").classList.toggle("hidden", !visible);
+        }
+    </script>
+</body>
+</html>
